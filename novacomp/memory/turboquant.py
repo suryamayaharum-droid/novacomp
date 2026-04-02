@@ -504,3 +504,14 @@ if __name__ == "__main__":
     memory.update_importance(hash1, 0.3)
     
     print("\n✅ Sistema TurboQuant funcionando perfeitamente!")
+
+
+# Singleton global
+_memory_instance = None
+
+def get_memory() -> TurboQuantMemory:
+    """Obtém instância singleton do TurboQuantMemory"""
+    global _memory_instance
+    if _memory_instance is None:
+        _memory_instance = TurboQuantMemory()
+    return _memory_instance

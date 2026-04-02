@@ -513,3 +513,14 @@ if __name__ == "__main__":
     print(f"Memórias: {status['memory_stats']['total_memories']}")
     
     print("\n✅ NovaComp Brain operacional e pronto para uso!")
+
+
+# Singleton global
+_brain_instance = None
+
+def get_brain() -> NovaBrain:
+    """Obtém instância singleton do NovaBrain"""
+    global _brain_instance
+    if _brain_instance is None:
+        _brain_instance = NovaBrain()
+    return _brain_instance
