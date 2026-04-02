@@ -12,3 +12,5 @@ apscheduler==3.10.4
 colorama==0.4.6
 rich==13.7.0
 loguru==0.7.2
+flask==3.0.0  # Para visualização neural
+sentence-transformers==2.2.2  # Embeddings reais (opcional)
