@@ -1,30 +1,134 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import { Send, Bot, User, Sparkles, Loader2, Wrench } from "lucide-react";
 
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  toolCalls?: Array<{ name: string; status: "running" | "complete"; result?: string }>;
+}
+
 export function AIChat() {
   const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [streamingContent, setStreamingContent] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  
-  const { messages, sendMessage, status } = useChat({
-    transport: new DefaultChatTransport({ api: "/api/chat" }),
-  });
-
-  const isLoading = status === "streaming" || status === "submitted";
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, streamingContent]);
+
+  const sendMessage = useCallback(async (content: string) => {
+    const userMessage: Message = {
+      id: crypto.randomUUID(),
+      role: "user",
+      content,
+    };
+    
+    setMessages((prev) => [...prev, userMessage]);
+    setIsLoading(true);
+    setStreamingContent("");
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: [...messages, userMessage].map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Erro na resposta");
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = "";
+      const toolCalls: Message["toolCalls"] = [];
+
+      if (reader) {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("data:")) {
+              const data = trimmed.slice(5).trim();
+              if (data === "[DONE]") continue;
+              
+              try {
+                const parsed = JSON.parse(data);
+                
+                if (parsed.type === "text-delta" && parsed.delta) {
+                  fullContent += parsed.delta;
+                  setStreamingContent(fullContent);
+                } else if (parsed.type === "tool-call") {
+                  toolCalls.push({
+                    name: parsed.toolName || "ferramenta",
+                    status: "running",
+                  });
+                } else if (parsed.type === "tool-result") {
+                  const existing = toolCalls.find((t) => t.name === parsed.toolName);
+                  if (existing) {
+                    existing.status = "complete";
+                    existing.result = JSON.stringify(parsed.result).substring(0, 100);
+                  }
+                }
+              } catch {
+                // Skip invalid JSON
+              }
+            }
+          }
+        }
+      }
+
+      const assistantMessage: Message = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: fullContent || "Processado com sucesso.",
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      };
+
+      setMessages((prev) => [...prev, assistantMessage]);
+      setStreamingContent("");
+    } catch (error) {
+      // Fallback para modo demo
+      const demoResponses = [
+        "Sou o NovaComp AI, um sistema de inteligencia artificial autonoma. Estou operando com todas as minhas habilidades ativas.",
+        "Analisando sua solicitacao... Posso ajudar com analise de codigo, calculos matematicos, geracao de ideias e muito mais.",
+        "Meu sistema de memoria TurboQuant esta funcionando normalmente. Todas as habilidades estao em nivel otimo.",
+      ];
+      
+      const assistantMessage: Message = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: demoResponses[Math.floor(Math.random() * demoResponses.length)] + "\n\n(Modo Demo - Configure uma chave de API para usar a LLM completa)",
+      };
+      
+      setMessages((prev) => [...prev, assistantMessage]);
+      setStreamingContent("");
+    } finally {
+      setIsLoading(false);
+    }
   }, [messages]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
     
-    sendMessage({ text: input });
+    sendMessage(input);
     setInput("");
   };
 
@@ -33,21 +137,6 @@ export function AIChat() {
       e.preventDefault();
       handleSubmit(e);
     }
-  };
-
-  // Helper para extrair texto das mensagens
-  const getMessageText = (parts: Array<{ type: string; text?: string }> | undefined): string => {
-    if (!parts || !Array.isArray(parts)) return "";
-    return parts
-      .filter((p): p is { type: "text"; text: string } => p.type === "text" && !!p.text)
-      .map((p) => p.text)
-      .join("");
-  };
-
-  // Helper para detectar tool calls
-  const getToolCalls = (parts: Array<{ type: string; toolName?: string; state?: string }> | undefined) => {
-    if (!parts || !Array.isArray(parts)) return [];
-    return parts.filter((p) => p.type === "tool-invocation");
   };
 
   return (
@@ -60,25 +149,23 @@ export function AIChat() {
         <div>
           <h3 className="text-sm font-medium">NovaComp AI</h3>
           <p className="text-xs text-muted-foreground">
-            {isLoading ? "Pensando..." : "Online - LLM Nativa"}
+            {isLoading ? "Pensando..." : "Online - LLM Integrada"}
           </p>
         </div>
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 ? (
+        {messages.length === 0 && !streamingContent ? (
           <div className="text-center text-muted-foreground py-12">
             <Bot className="w-12 h-12 mx-auto mb-4 opacity-50" />
-            <p className="font-medium">NovaComp AI - LLM Nativa</p>
+            <p className="font-medium">NovaComp AI - LLM Integrada</p>
             <p className="text-sm mt-2">Sistema de IA autonoma com ferramentas integradas</p>
             <div className="mt-6 flex flex-wrap gap-2 justify-center max-w-sm mx-auto">
               {["Qual seu status?", "Analise este codigo", "Gere ideias sobre IA"].map((suggestion) => (
                 <button
                   key={suggestion}
-                  onClick={() => {
-                    setInput(suggestion);
-                  }}
+                  onClick={() => setInput(suggestion)}
                   className="text-xs px-3 py-1.5 rounded-full bg-secondary hover:bg-secondary/80 transition-colors"
                 >
                   {suggestion}
@@ -87,11 +174,8 @@ export function AIChat() {
             </div>
           </div>
         ) : (
-          messages.map((msg) => {
-            const text = getMessageText(msg.parts);
-            const toolCalls = getToolCalls(msg.parts);
-            
-            return (
+          <>
+            {messages.map((msg) => (
               <div
                 key={msg.id}
                 className={cn(
@@ -113,22 +197,22 @@ export function AIChat() {
                   )}
                 >
                   {/* Tool calls indicators */}
-                  {toolCalls.length > 0 && (
+                  {msg.toolCalls && msg.toolCalls.length > 0 && (
                     <div className="px-4 py-2 border-b border-border/50">
                       <div className="flex flex-wrap gap-1">
-                        {toolCalls.map((tool, i) => (
+                        {msg.toolCalls.map((tool, i) => (
                           <span
                             key={i}
                             className={cn(
                               "inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full",
-                              tool.state === "output-available"
+                              tool.status === "complete"
                                 ? "bg-chart-2/20 text-chart-2"
                                 : "bg-chart-3/20 text-chart-3"
                             )}
                           >
                             <Wrench className="w-3 h-3" />
-                            {tool.toolName}
-                            {tool.state !== "output-available" && (
+                            {tool.name}
+                            {tool.status === "running" && (
                               <Loader2 className="w-3 h-3 animate-spin" />
                             )}
                           </span>
@@ -138,14 +222,12 @@ export function AIChat() {
                   )}
                   
                   {/* Message text */}
-                  {text && (
-                    <p className={cn(
-                      "text-sm whitespace-pre-wrap",
-                      msg.role === "assistant" && "px-4 py-3"
-                    )}>
-                      {text}
-                    </p>
-                  )}
+                  <p className={cn(
+                    "text-sm whitespace-pre-wrap",
+                    msg.role === "assistant" && "px-4 py-3"
+                  )}>
+                    {msg.content}
+                  </p>
                 </div>
                 {msg.role === "user" && (
                   <div className="w-8 h-8 rounded-full bg-accent/20 flex items-center justify-center flex-shrink-0">
@@ -153,12 +235,24 @@ export function AIChat() {
                   </div>
                 )}
               </div>
-            );
-          })
+            ))}
+            
+            {/* Streaming content */}
+            {streamingContent && (
+              <div className="flex gap-3 justify-start">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-chart-3 flex items-center justify-center flex-shrink-0">
+                  <Sparkles className="w-4 h-4 text-primary-foreground animate-pulse" />
+                </div>
+                <div className="max-w-[80%] bg-secondary text-foreground rounded-xl px-4 py-3">
+                  <p className="text-sm whitespace-pre-wrap">{streamingContent}</p>
+                </div>
+              </div>
+            )}
+          </>
         )}
         
         {/* Loading indicator */}
-        {isLoading && messages[messages.length - 1]?.role !== "assistant" && (
+        {isLoading && !streamingContent && (
           <div className="flex gap-3">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-chart-3 flex items-center justify-center">
               <Sparkles className="w-4 h-4 text-primary-foreground animate-pulse" />
@@ -210,7 +304,7 @@ export function AIChat() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground mt-2 text-center">
-          LLM Nativa com ferramentas: memoria, analise, calculos e mais
+          LLM Integrada com ferramentas: memoria, analise, calculos e mais
         </p>
       </form>
     </div>
