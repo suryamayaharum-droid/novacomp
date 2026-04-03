@@ -1,0 +1,10 @@
+*.db
+*.sqlite
+*.pyc
+__pycache__/
+*.egg-info/
+.git/
+.env
+venv/
+*.log
+tests/

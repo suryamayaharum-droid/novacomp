@@ -2,14 +2,25 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/index.py",
+      "src": "wsgi.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/index.py"
+      "dest": "wsgi.py"
     }
-  ]
+  ],
+  "functions": {
+    "wsgi.py": {
+      "runtime": "python3.9",
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
+  "env": {
+    "PYTHONPATH": ".",
+    "FLASK_ENV": "production"
+  }
 }
