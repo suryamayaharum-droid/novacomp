@@ -103,8 +103,7 @@ export function AIChat() {
 
       setMessages((prev) => [...prev, assistantMessage]);
       setStreamingContent("");
-    } catch (error) {
-      // Fallback para modo demo
+    } catch {
       const demoResponses = [
         "Sou o NovaComp AI, um sistema de inteligencia artificial autonoma. Estou operando com todas as minhas habilidades ativas.",
         "Analisando sua solicitacao... Posso ajudar com analise de codigo, calculos matematicos, geracao de ideias e muito mais.",
@@ -114,7 +113,7 @@ export function AIChat() {
       const assistantMessage: Message = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: demoResponses[Math.floor(Math.random() * demoResponses.length)] + "\n\n(Modo Demo - Configure uma chave de API para usar a LLM completa)",
+        content: demoResponses[Math.floor(Math.random() * demoResponses.length)] + "\n\n(Modo Demo - Configure LLM_PROVIDER para usar Ollama ou OpenAI)",
       };
       
       setMessages((prev) => [...prev, assistantMessage]);
@@ -141,7 +140,6 @@ export function AIChat() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
       <div className="flex items-center gap-2 p-3 border-b border-border bg-card/50">
         <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-chart-3 flex items-center justify-center">
           <Sparkles className="w-4 h-4 text-primary-foreground" />
@@ -154,7 +152,6 @@ export function AIChat() {
         </div>
       </div>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 && !streamingContent ? (
           <div className="text-center text-muted-foreground py-12">
@@ -196,7 +193,6 @@ export function AIChat() {
                       : "bg-secondary text-foreground"
                   )}
                 >
-                  {/* Tool calls indicators */}
                   {msg.toolCalls && msg.toolCalls.length > 0 && (
                     <div className="px-4 py-2 border-b border-border/50">
                       <div className="flex flex-wrap gap-1">
@@ -220,8 +216,6 @@ export function AIChat() {
                       </div>
                     </div>
                   )}
-                  
-                  {/* Message text */}
                   <p className={cn(
                     "text-sm whitespace-pre-wrap",
                     msg.role === "assistant" && "px-4 py-3"
@@ -237,7 +231,6 @@ export function AIChat() {
               </div>
             ))}
             
-            {/* Streaming content */}
             {streamingContent && (
               <div className="flex gap-3 justify-start">
                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-chart-3 flex items-center justify-center flex-shrink-0">
@@ -251,7 +244,6 @@ export function AIChat() {
           </>
         )}
         
-        {/* Loading indicator */}
         {isLoading && !streamingContent && (
           <div className="flex gap-3">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary to-chart-3 flex items-center justify-center">
@@ -269,7 +261,6 @@ export function AIChat() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
       <form onSubmit={handleSubmit} className="p-4 border-t border-border">
         <div className="flex gap-3">
           <textarea
@@ -304,7 +295,7 @@ export function AIChat() {
           </button>
         </div>
         <p className="text-xs text-muted-foreground mt-2 text-center">
-          LLM Integrada com ferramentas: memoria, analise, calculos e mais
+          Suporta Ollama e OpenAI - Configure via variaveis de ambiente
         </p>
       </form>
     </div>

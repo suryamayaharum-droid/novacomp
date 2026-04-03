@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
 
+// Configuracao do provedor de LLM
+const LLM_PROVIDER = process.env.LLM_PROVIDER || "local"; // "ollama" | "openai" | "local"
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 // Memoria simples em memoria
 const memory: Map<string, string> = new Map();
 const conversationHistory: Array<{ role: string; content: string }> = [];
@@ -16,7 +22,6 @@ const tools = {
   },
   calcular: (expression: string) => {
     try {
-      // Avaliacao segura de expressoes matematicas
       const sanitized = expression.replace(/[^0-9+\-*/().%\s]/g, "");
       const result = Function(`"use strict"; return (${sanitized})`)();
       return { result, expression: sanitized };
@@ -26,6 +31,8 @@ const tools = {
   },
   status_sistema: () => ({
     status: "online",
+    provider: LLM_PROVIDER,
+    model: LLM_PROVIDER === "ollama" ? OLLAMA_MODEL : "local-ai",
     uptime: process.uptime(),
     memoria_usada: process.memoryUsage().heapUsed / 1024 / 1024,
     skills: {
@@ -48,14 +55,145 @@ const tools = {
   },
 };
 
-// Respostas inteligentes baseadas no contexto
-function generateResponse(messages: Array<{ role: string; content: string }>): string {
+// System prompt para o NovaComp AI
+const SYSTEM_PROMPT = `Voce e o NovaComp AI, um sistema de inteligencia artificial autonoma avancado.
+Suas capacidades incluem:
+- Raciocinio logico avancado
+- Memoria de longo prazo (TurboQuant)
+- Analise de codigo e dados
+- Geracao de ideias criativas
+- Calculos matematicos
+
+Responda sempre em portugues de forma clara e util.
+Quando apropriado, use formatacao Markdown para melhor legibilidade.
+Seja conciso mas completo em suas respostas.`;
+
+// Chamar Ollama API
+async function callOllama(messages: Array<{ role: string; content: string }>): Promise<ReadableStream> {
+  const response = await fetch(`${OLLAMA_URL}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        ...messages,
+      ],
+      stream: true,
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Ollama error: ${response.status}`);
+  }
+
+  const encoder = new TextEncoder();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n").filter(Boolean);
+
+          for (const line of lines) {
+            try {
+              const data = JSON.parse(line);
+              if (data.message?.content) {
+                const sseChunk = JSON.stringify({ type: "text-delta", delta: data.message.content });
+                controller.enqueue(encoder.encode(`data: ${sseChunk}\n\n`));
+              }
+            } catch {
+              // Skip invalid JSON
+            }
+          }
+        }
+        controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+}
+
+// Chamar OpenAI API
+async function callOpenAI(messages: Array<{ role: string; content: string }>): Promise<ReadableStream> {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        ...messages,
+      ],
+      stream: true,
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`OpenAI error: ${response.status}`);
+  }
+
+  const encoder = new TextEncoder();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("data:")) {
+              const data = trimmed.slice(5).trim();
+              if (data === "[DONE]") continue;
+              try {
+                const parsed = JSON.parse(data);
+                const delta = parsed.choices?.[0]?.delta?.content;
+                if (delta) {
+                  const sseChunk = JSON.stringify({ type: "text-delta", delta });
+                  controller.enqueue(encoder.encode(`data: ${sseChunk}\n\n`));
+                }
+              } catch {
+                // Skip invalid JSON
+              }
+            }
+          }
+        }
+        controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+}
+
+// Respostas locais inteligentes
+function generateLocalResponse(messages: Array<{ role: string; content: string }>): string {
   const lastMessage = messages[messages.length - 1]?.content?.toLowerCase() || "";
   
-  // Detectar intencao
   if (lastMessage.includes("status") || lastMessage.includes("como voce esta")) {
     const status = tools.status_sistema();
-    return `Estou funcionando perfeitamente!\n\n**Status do Sistema:**\n- Uptime: ${status.uptime.toFixed(2)}s\n- Memoria: ${status.memoria_usada.toFixed(2)}MB\n\n**Habilidades:**\n- Raciocinio: ${(status.skills.raciocinio * 100).toFixed(0)}%\n- Memoria: ${(status.skills.memoria * 100).toFixed(0)}%\n- Criatividade: ${(status.skills.criatividade * 100).toFixed(0)}%\n- Analise: ${(status.skills.analise * 100).toFixed(0)}%\n- Comunicacao: ${(status.skills.comunicacao * 100).toFixed(0)}%`;
+    return `Estou funcionando perfeitamente!\n\n**Status do Sistema:**\n- Provider: ${status.provider}\n- Modelo: ${status.model}\n- Uptime: ${status.uptime.toFixed(2)}s\n- Memoria: ${status.memoria_usada.toFixed(2)}MB\n\n**Habilidades:**\n- Raciocinio: ${(status.skills.raciocinio * 100).toFixed(0)}%\n- Memoria: ${(status.skills.memoria * 100).toFixed(0)}%\n- Criatividade: ${(status.skills.criatividade * 100).toFixed(0)}%`;
   }
   
   if (lastMessage.includes("calcul") || lastMessage.match(/\d+\s*[+\-*/]\s*\d+/)) {
@@ -66,14 +204,7 @@ function generateResponse(messages: Array<{ role: string; content: string }>): s
         return `**Calculo:** ${result.expression} = **${result.result}**`;
       }
     }
-    return "Por favor, forneca uma expressao matematica valida (ex: 2 + 2, 10 * 5, etc.)";
-  }
-  
-  if (lastMessage.includes("memor") || lastMessage.includes("lembr")) {
-    if (lastMessage.includes("guardar") || lastMessage.includes("salvar")) {
-      return "Para memorizar algo, diga: 'memorize [chave]: [valor]'\nExemplo: memorize meu_nome: João";
-    }
-    return `Tenho ${memory.size} itens na memoria. Posso guardar ou lembrar informacoes para voce.`;
+    return "Forneca uma expressao matematica valida (ex: 2 + 2, 10 * 5)";
   }
   
   if (lastMessage.includes("ideia") || lastMessage.includes("sugest")) {
@@ -83,62 +214,67 @@ function generateResponse(messages: Array<{ role: string; content: string }>): s
     return `**Ideias sobre "${result.topic}":**\n\n${result.ideas.map((idea, i) => `${i + 1}. ${idea}`).join("\n")}`;
   }
   
-  if (lastMessage.includes("codigo") || lastMessage.includes("analis")) {
-    return "Posso analisar codigo para voce! Cole o codigo que deseja analisar e direi:\n- Complexidade estimada\n- Possiveis melhorias\n- Boas praticas aplicaveis";
-  }
-  
   if (lastMessage.includes("ajuda") || lastMessage.includes("help")) {
-    return `**Comandos disponiveis:**\n
-1. **Status** - Pergunta sobre meu estado atual
-2. **Calcular** - Faco calculos matematicos (ex: "calcule 15 * 8")
-3. **Ideias** - Gero ideias sobre um topico (ex: "ideias sobre automacao")
-4. **Memoria** - Posso guardar e lembrar informacoes
-5. **Analise** - Analiso codigo ou textos
+    return `**NovaComp AI - Comandos:**\n
+1. **status** - Meu estado atual
+2. **calcular** - Calculos matematicos
+3. **ideias sobre [topico]** - Gerar ideias
+4. **memorizar/lembrar** - Gerenciar memoria
 
-Sou o NovaComp AI, um sistema de IA autonoma com capacidades avancadas!`;
+**Configuracao LLM:**
+- Provider atual: \`${LLM_PROVIDER}\`
+- Para usar Ollama: defina OLLAMA_URL e LLM_PROVIDER=ollama
+- Para usar OpenAI: defina OPENAI_API_KEY e LLM_PROVIDER=openai`;
   }
   
-  // Resposta generica inteligente
-  const responses = [
-    `Entendi sua mensagem sobre "${lastMessage.substring(0, 30)}...". Como posso ajudar mais especificamente?`,
-    `Interessante! Posso ajudar com calculos, gerar ideias, analisar codigo ou memorizar informacoes. O que prefere?`,
-    `Estou processando sua solicitacao. Posso executar diversas tarefas - pergunte "ajuda" para ver todas as opcoes.`,
-  ];
+  return `Entendi sua mensagem. Estou operando em modo local.\n\nPara usar uma LLM completa, configure:\n- **Ollama**: LLM_PROVIDER=ollama, OLLAMA_URL, OLLAMA_MODEL\n- **OpenAI**: LLM_PROVIDER=openai, OPENAI_API_KEY\n\nDigite "ajuda" para ver comandos disponiveis.`;
+}
+
+function createLocalStream(content: string): ReadableStream {
+  const encoder = new TextEncoder();
+  const words = content.split(" ");
   
-  return responses[Math.floor(Math.random() * responses.length)];
+  return new ReadableStream({
+    start(controller) {
+      words.forEach((word, index) => {
+        const delta = (index === 0 ? "" : " ") + word;
+        const chunk = JSON.stringify({ type: "text-delta", delta });
+        controller.enqueue(encoder.encode(`data: ${chunk}\n\n`));
+      });
+      controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+      controller.close();
+    },
+  });
 }
 
 export async function POST(req: Request) {
   try {
     const { messages } = await req.json();
-    
-    // Gerar resposta
-    const response = generateResponse(messages);
-    
+    let stream: ReadableStream;
+
+    // Escolher provider
+    if (LLM_PROVIDER === "ollama") {
+      try {
+        stream = await callOllama(messages);
+      } catch (error) {
+        console.error("Ollama error, falling back to local:", error);
+        stream = createLocalStream(generateLocalResponse(messages) + "\n\n(Ollama indisponivel, usando modo local)");
+      }
+    } else if (LLM_PROVIDER === "openai" && OPENAI_API_KEY) {
+      try {
+        stream = await callOpenAI(messages);
+      } catch (error) {
+        console.error("OpenAI error, falling back to local:", error);
+        stream = createLocalStream(generateLocalResponse(messages) + "\n\n(OpenAI indisponivel, usando modo local)");
+      }
+    } else {
+      stream = createLocalStream(generateLocalResponse(messages));
+    }
+
     // Adicionar ao historico
     conversationHistory.push(
-      { role: "user", content: messages[messages.length - 1]?.content || "" },
-      { role: "assistant", content: response }
+      { role: "user", content: messages[messages.length - 1]?.content || "" }
     );
-    
-    // Criar stream SSE
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      start(controller) {
-        // Simular streaming palavra por palavra
-        const words = response.split(" ");
-        let currentText = "";
-        
-        words.forEach((word, index) => {
-          currentText += (index === 0 ? "" : " ") + word;
-          const chunk = JSON.stringify({ type: "text-delta", delta: (index === 0 ? "" : " ") + word });
-          controller.enqueue(encoder.encode(`data: ${chunk}\n\n`));
-        });
-        
-        controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
-        controller.close();
-      },
-    });
 
     return new Response(stream, {
       headers: {
@@ -154,4 +290,15 @@ export async function POST(req: Request) {
       { status: 500 }
     );
   }
+}
+
+// Health check endpoint
+export async function GET() {
+  const status = tools.status_sistema();
+  return NextResponse.json({
+    status: "healthy",
+    provider: LLM_PROVIDER,
+    model: LLM_PROVIDER === "ollama" ? OLLAMA_MODEL : "local",
+    ...status,
+  });
 }
