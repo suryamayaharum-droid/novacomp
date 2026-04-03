@@ -1,45 +1,45 @@
-```
+```markdown
 # Environment
 .env
 .env.local
-*.env.*
-
-# Logs and temp files
-*.log
-*.tmp
-
-# Editors
-.vscode/
-.idea/
+.env.*
 
 # Dependencies
 node_modules/
-venv/
 .venv/
+venv/
 __pycache__/
 .mypy_cache/
 .pytest_cache/
-.julia/
-zig*/
-julia-*/
-
-# Build artifacts
 dist/
 build/
 target/
+.gradle/
+
+# Compiled and binary files
 *.pyc
 *.class
 *.o
-*.obj
 *.exe
 *.dll
 *.so
 *.a
+*.obj
 *.out
 
-# System files
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System
 .DS_Store
 Thumbs.db
+
+# Logs and temp files
+*.log
+*.tmp
 
 # Coverage
 coverage/
