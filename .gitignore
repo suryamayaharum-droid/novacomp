@@ -1,38 +1,43 @@
 ```
-# Vercel specific
-.vercelignore
-
-# Environment variables
+# Environment
 .env
 .env.local
-.env.*
+*.env.*
 
-# Logs
+# Logs and temp files
 *.log
-
-# Temporary files
 *.tmp
-*.swp
-*.swo
+
+# Editors
+.vscode/
+.idea/
 
 # Dependencies
 node_modules/
-.venv/
 venv/
+.venv/
 __pycache__/
 .mypy_cache/
 .pytest_cache/
+.julia/
+zig*/
+julia-*/
 
 # Build artifacts
 dist/
 build/
 target/
+*.pyc
+*.class
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.out
 
-# Editor/IDE files
-.vscode/
-.idea/
-
-# OS files
+# System files
 .DS_Store
 Thumbs.db
 
