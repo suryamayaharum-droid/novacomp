@@ -7,21 +7,18 @@ import { StatusCard, MetricRow } from "./status-card";
 import { SkillBar } from "./skill-bar";
 import { ProcessIndicator } from "./process-indicator";
 import { LogViewer, type LogEntry } from "./log-viewer";
-import { ChatInterface } from "./chat-interface";
+import { AIChat } from "./ai-chat";
 import { EvolutionDisplay } from "./evolution-display";
 import { SkillsChart } from "./skills-chart";
 import { ActionButtons } from "./action-buttons";
 import { formatDuration, formatNumber } from "@/lib/utils";
 import {
   fetchStatus,
-  sendMessage,
   type NovaCompStatus,
-  type ChatResponse,
 } from "@/lib/api";
 import {
   Activity,
   Database,
-  MessageSquare,
   Terminal,
   Target,
   Clock,
@@ -29,14 +26,8 @@ import {
   Network,
   BarChart3,
   Zap,
+  Sparkles,
 } from "lucide-react";
-
-interface Message {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  confidence?: number;
-}
 
 // Mock data para quando a API nao esta disponivel
 const mockStatus: NovaCompStatus = {
@@ -67,9 +58,7 @@ const mockStatus: NovaCompStatus = {
 };
 
 export function Dashboard() {
-  const [messages, setMessages] = useState<Message[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   
   // Fetch status com SWR
@@ -116,49 +105,6 @@ export function Dashboard() {
       addLog("info", `Auto-reflexao realizada: ${resultStr.substring(0, 50)}`);
     }
   }, [addLog]);
-  
-  // Envia mensagem
-  const handleSendMessage = async (content: string) => {
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content,
-    };
-    setMessages((prev) => [...prev, userMessage]);
-    addLog("info", `Enviado: ${content.substring(0, 50)}...`);
-    
-    setIsLoading(true);
-    
-    try {
-      const allMessages = [...messages, userMessage].map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-      
-      const response: ChatResponse = await sendMessage(allMessages);
-      
-      const assistantMessage: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: response.response,
-        confidence: response.confidence,
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
-      addLog("success", "Resposta recebida da IA");
-    } catch (err) {
-      // Fallback response quando API nao esta disponivel
-      const fallbackMessage: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: `Recebi sua mensagem: "${content}"\n\nNo momento estou operando em modo de demonstracao. Conecte a API Python para interacao completa com o sistema NovaComp.`,
-        confidence: 0.5,
-      };
-      setMessages((prev) => [...prev, fallbackMessage]);
-      addLog("warning", "Usando resposta de demonstracao");
-    } finally {
-      setIsLoading(false);
-    }
-  };
   
   return (
     <div className="min-h-screen bg-background grid-pattern">
@@ -225,18 +171,15 @@ export function Dashboard() {
           </div>
           
           {/* Middle Column - Chat */}
-          <div className="lg:col-span-1">
+          <div className="lg:col-span-1 space-y-6">
+            {/* AI Chat com LLM Nativa */}
             <StatusCard
-              title="Interacao"
-              icon={<MessageSquare className="w-4 h-4" />}
+              title="NovaComp AI - LLM Nativa"
+              icon={<Sparkles className="w-4 h-4" />}
               className="h-[600px] flex flex-col"
             >
               <div className="flex-1 -mx-5 -mb-5 border-t border-border mt-2">
-                <ChatInterface
-                  messages={messages}
-                  onSendMessage={handleSendMessage}
-                  isLoading={isLoading}
-                />
+                <AIChat />
               </div>
             </StatusCard>
           </div>
