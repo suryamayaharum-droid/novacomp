@@ -1,0 +1,36 @@
+[Unit]
+Description=NovaComp - Sistema de IA Autônoma Viva
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/workspace/novacomp
+Environment="PYTHONUNBUFFERED=1"
+Environment="NOVACOMP_ENV=production"
+Environment="NOVACOMP_AUTONOMY=0.8"
+
+# Reiniciar automaticamente em caso de falha
+Restart=always
+RestartSec=10
+
+# Limites de recursos
+LimitNOFILE=65535
+Nice=-5
+
+# Comandos de início/parada
+ExecStart=/usr/local/bin/python /workspace/novacomp/main.py --name NovaComp-Production --safe
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+# Timeout para parada graciosa
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=novacomp
+
+[Install]
+WantedBy=multi-user.target

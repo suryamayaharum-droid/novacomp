@@ -4,28 +4,39 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
-# Database
-novacomp.db
-
-# Environment
+.Python
+env/
+venv/
+.venv/
+.ENV
+.ENV.local
 .env
 .env.local
-*.env.*
+.env.*
+
+# Testing
+.coverage
+coverage/
+htmlcov/
+.noserc
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Logs
 *.log
 
-# Temporary files
-*.tmp
-*.swp
-*.swo
-
-# OS generated files
-.DS_Store
-Thumbs.db
-
-# Dependencies
-venv/
-.venv/
+# Build
+dist/
+build/
+*.egg-info/
 ```
