@@ -1,1 +1,4 @@
-{\n  "functions": {\n    "api/": {\n      "runtime": "python3.9"\n    }\n  },\n  "env": {\n    "MY_ENV_VAR": "value"\n  }\n}
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs"
+}
