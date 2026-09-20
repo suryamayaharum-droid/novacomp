@@ -1,0 +1,27 @@
+{
+  "schema": "meaw.federation-link/v1",
+  "organism": "HARUM-MEAW",
+  "component": "novacomp",
+  "repository": "suryamayaharum-droid/novacomp",
+  "role": "local-cognitive-engine",
+  "organ": "compressed-memory-cortex",
+  "capabilities": [
+    "turboquant",
+    "local-memory",
+    "safe-executor",
+    "self-reflection",
+    "dashboard"
+  ],
+  "lifecycle": "active",
+  "trust": "owned",
+  "authority": "suryamayaharum-droid/SARASWATI-HIVE-MIND",
+  "authority_manifest": "ecosystem/repository_organism.json",
+  "nervous_system": "suryamayaharum-droid/ai23",
+  "memory_authority": "MemoryCastle@suryamayaharum-droid/SARASWATI-HIVE-MIND",
+  "policy": {
+    "discovery_executes_commands": false,
+    "manifest_grants_execution": false,
+    "explicit_adapter_required": true,
+    "secrets_allowed": false
+  }
+}
