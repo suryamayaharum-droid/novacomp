@@ -1,1 +1,14 @@
-{\n  "functions": {\n    "api/": {\n      "runtime": "python3.9"\n    }\n  },\n  "env": {\n    "MY_ENV_VAR": "value"\n  }\n}
+{
+  "functions": {
+    "api/": {
+      "runtime": "python3.9"
+    }
+  },
+  "env": {
+    "MY_ENV_VAR": "value"
+  },
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": false
+  }
+}
