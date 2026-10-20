@@ -259,16 +259,16 @@ def load_agent_checkpoint(run_id: str) -> dict[str, Any]:
 @app.post("/api/agent/evolve/propose", dependencies=[Depends(require_token)])
 def propose_evolution(request: EvolutionInput) -> dict[str, Any]:
     """Create and persist one bounded improvement proposal from observed evidence."""
-    observation = Observation(
-        run_id=request.run_id,
-        summary=request.summary,
-        metrics=tuple(
-            Metric(name=m.name, value=m.value, target=m.target, direction=m.direction)
-            for m in request.metrics
-        ),
-        known_failures=tuple(request.known_failures),
-    )
     try:
+        observation = Observation(
+            run_id=request.run_id,
+            summary=request.summary,
+            metrics=tuple(
+                Metric(name=m.name, value=m.value, target=m.target, direction=m.direction)
+                for m in request.metrics
+            ),
+            known_failures=tuple(request.known_failures),
+        )
         proposal = propose_next_iteration(
             observation,
             iteration=request.iteration,
