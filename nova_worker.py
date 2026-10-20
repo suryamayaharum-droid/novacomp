@@ -25,18 +25,37 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {API_TOKEN}"}
 
 
-def process_task(client: httpx.Client, task: dict[str, Any]) -> dict[str, Any]:
+def _validated_payload(task: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Validate task/action and align the API payload with the queued run_id."""
     action = task.get("action")
     if action not in ALLOWED_ACTIONS:
         raise ValueError("Action is not allowlisted.")
+    run_id = task.get("run_id")
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("Queued task is missing a valid run_id.")
+    raw_payload = task.get("payload", {})
+    if not isinstance(raw_payload, dict):
+        raise ValueError("Queued task payload must be an object.")
+    payload = dict(raw_payload)
+    if payload.get("run_id") not in (None, run_id):
+        raise ValueError("Payload run_id does not match the queued task run_id.")
+    payload["run_id"] = run_id
+    if action == "propose_improvement" and not isinstance(payload.get("summary"), str):
+        raise ValueError("propose_improvement requires a summary string.")
+    if action == "record_checkpoint" and not isinstance(payload.get("tasks"), list):
+        raise ValueError("record_checkpoint requires a tasks list.")
     endpoint = {
         "propose_improvement": "/api/agent/evolve/propose",
         "record_checkpoint": "/api/agent/checkpoint",
     }[action]
-    response = client.post(endpoint, json=task.get("payload", {}), headers=_headers())
+    return endpoint, payload
+
+
+def process_task(client: httpx.Client, task: dict[str, Any]) -> dict[str, Any]:
+    endpoint, payload = _validated_payload(task)
+    response = client.post(endpoint, json=payload, headers=_headers())
     response.raise_for_status()
-    body = response.json()
-    return {"action": action, "response": body}
+    return {"action": task["action"], "response": response.json()}
 
 
 def run_worker(*, max_tasks: int = MAX_TASKS, poll_seconds: float = POLL_SECONDS) -> dict[str, int]:
@@ -45,6 +64,8 @@ def run_worker(*, max_tasks: int = MAX_TASKS, poll_seconds: float = POLL_SECONDS
         raise ValueError("max_tasks must be between 1 and 1000.")
     if poll_seconds < 0 or poll_seconds > 60:
         raise ValueError("poll_seconds must be between 0 and 60.")
+    if not 10 <= LEASE_SECONDS <= 600:
+        raise ValueError("NOVACOMP_WORKER_LEASE_SECONDS must be between 10 and 600.")
     headers = _headers()
     stats = {"claimed": 0, "succeeded": 0, "failed": 0, "idle_polls": 0}
     with httpx.Client(base_url=API_URL, timeout=20.0, follow_redirects=False) as client:
@@ -60,7 +81,6 @@ def run_worker(*, max_tasks: int = MAX_TASKS, poll_seconds: float = POLL_SECONDS
                 stats["idle_polls"] += 1
                 if poll_seconds:
                     time.sleep(poll_seconds)
-                # Bounded idle handling: no endless polling loop.
                 continue
             task = envelope["task"]
             stats["claimed"] += 1
@@ -73,14 +93,15 @@ def run_worker(*, max_tasks: int = MAX_TASKS, poll_seconds: float = POLL_SECONDS
             }
             try:
                 finish["result"] = process_task(client, task)
-                stats["succeeded"] += 1
             except Exception as exc:
                 finish["outcome"] = "failed"
-                # Keep only a short exception summary; never include request headers.
                 finish["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
-                stats["failed"] += 1
             finish_response = client.post("/api/queue/finish", json=finish, headers=headers)
             finish_response.raise_for_status()
+            if finish["outcome"] == "succeeded":
+                stats["succeeded"] += 1
+            else:
+                stats["failed"] += 1
     return stats
 
 
