@@ -1,12 +1,4 @@
 {
-  "functions": {
-    "api/": {
-      "runtime": "python3.9"
-    }
-  },
-  "env": {
-    "MY_ENV_VAR": "value"
-  },
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "git": {
     "deploymentEnabled": false
