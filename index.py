@@ -6,6 +6,8 @@ and persistence requires DATABASE_URL. No secrets are hard-coded.
 from __future__ import annotations
 
 import hmac
+import hashlib
+import secrets
 import json
 import os
 from datetime import datetime, timezone
@@ -57,6 +59,26 @@ CREATE TABLE IF NOT EXISTS novacomp_evolution_proposals (
 );
 CREATE INDEX IF NOT EXISTS novacomp_evolution_proposals_run_idx
     ON novacomp_evolution_proposals (run_id, iteration DESC);
+CREATE TABLE IF NOT EXISTS novacomp_task_queue (
+    task_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('propose_improvement', 'record_checkpoint')),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    state TEXT NOT NULL DEFAULT 'queued'
+        CHECK (state IN ('queued', 'leased', 'succeeded', 'failed', 'needs_review')),
+    idempotency_key TEXT UNIQUE,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts BETWEEN 1 AND 10),
+    lease_token_hash TEXT,
+    lease_until TIMESTAMPTZ,
+    result JSONB,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS novacomp_task_queue_claim_idx
+    ON novacomp_task_queue (state, created_at)
+    WHERE state = 'queued';
 """
 
 
@@ -92,6 +114,23 @@ class MetricInput(BaseModel):
     value: float
     target: float
     direction: str = "higher"
+
+
+class QueueTaskInput(BaseModel):
+    task_id: str = Field(min_length=1, max_length=120)
+    run_id: str = Field(min_length=1, max_length=120)
+    action: str = Field(pattern=r"^(propose_improvement|record_checkpoint)$")
+    payload: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    max_attempts: int = Field(default=3, ge=1, le=10)
+
+
+class QueueFinishInput(BaseModel):
+    task_id: str = Field(min_length=1, max_length=120)
+    lease_token: str = Field(min_length=20, max_length=200)
+    outcome: str = Field(pattern=r"^(succeeded|failed|needs_review)$")
+    result: dict[str, Any] = Field(default_factory=dict)
+    error: str = Field(default="", max_length=2000)
 
 
 class EvolutionInput(BaseModel):
@@ -336,6 +375,121 @@ def list_evolution_proposals(run_id: str, limit: int = Query(default=10, ge=1, l
     }
 
 
+@app.post("/api/queue/enqueue", dependencies=[Depends(require_token)])
+def enqueue_task(request: QueueTaskInput) -> dict[str, Any]:
+    """Persist an allowlisted task; enqueueing never executes it."""
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(
+                """
+                INSERT INTO novacomp_task_queue
+                    (task_id, run_id, action, payload, idempotency_key, max_attempts)
+                VALUES (%s, %s, %s, %s::jsonb, %s, %s)
+                ON CONFLICT (idempotency_key) DO NOTHING
+                RETURNING task_id, state, created_at
+                """,
+                (request.task_id, request.run_id, request.action,
+                 json.dumps(request.payload), request.idempotency_key, request.max_attempts),
+            )
+            row = cur.fetchone()
+            if row is None:
+                cur.execute(
+                    """SELECT task_id, state, created_at FROM novacomp_task_queue
+                       WHERE idempotency_key = %s""",
+                    (request.idempotency_key,),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise HTTPException(status_code=503, detail="Could not confirm queued task.")
+                if row[0] != request.task_id:
+                    raise HTTPException(status_code=409, detail="Idempotency key belongs to another task.")
+    return {"stored": True, "created_now": row[0] == request.task_id,
+            "task_id": row[0], "state": row[1], "created_at": row[2].isoformat(),
+            "execution_started": False}
+
+
+@app.post("/api/queue/claim", dependencies=[Depends(require_token)])
+def claim_task(lease_seconds: int = Query(default=90, ge=10, le=600)) -> dict[str, Any]:
+    """Lease one queued task for a separate worker; never runs the task in the API."""
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(
+                """
+                WITH candidate AS (
+                    SELECT task_id FROM novacomp_task_queue
+                    WHERE state = 'queued' AND attempts < max_attempts
+                    ORDER BY created_at, task_id
+                    FOR UPDATE SKIP LOCKED LIMIT 1
+                )
+                UPDATE novacomp_task_queue AS q
+                SET state = 'leased', attempts = attempts + 1,
+                    lease_token_hash = %s,
+                    lease_until = NOW() + (%s * INTERVAL '1 second'),
+                    updated_at = NOW()
+                FROM candidate
+                WHERE q.task_id = candidate.task_id
+                RETURNING q.task_id, q.run_id, q.action, q.payload, q.attempts,
+                          q.max_attempts, q.lease_until
+                """,
+                (token_hash, lease_seconds),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return {"claimed": False, "task": None}
+    return {"claimed": True, "task": {
+        "task_id": row[0], "run_id": row[1], "action": row[2], "payload": row[3],
+        "attempt": row[4], "max_attempts": row[5], "lease_until": row[6].isoformat(),
+        "lease_token": token,
+    }, "execution_started": False,
+        "note": "A separate allowlisted worker must perform the action and report its outcome."}
+
+
+@app.post("/api/queue/finish", dependencies=[Depends(require_token)])
+def finish_task(request: QueueFinishInput) -> dict[str, Any]:
+    """Accept an outcome only from the holder of the active lease token."""
+    token_hash = hashlib.sha256(request.lease_token.encode("utf-8")).hexdigest()
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(
+                """
+                UPDATE novacomp_task_queue
+                SET state = %s,
+                    result = %s::jsonb,
+                    last_error = NULLIF(%s, ''),
+                    lease_token_hash = NULL,
+                    lease_until = NULL,
+                    updated_at = NOW()
+                WHERE task_id = %s AND state = 'leased'
+                  AND lease_token_hash = %s AND lease_until > NOW()
+                RETURNING task_id, state, attempts
+                """,
+                (request.outcome, json.dumps(request.result), request.error,
+                 request.task_id, token_hash),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=409, detail="Lease invalid, expired, or task is not leased.")
+    return {"updated": True, "task_id": row[0], "state": row[1], "attempts": row[2]}
+
+
+@app.get("/api/queue/status", dependencies=[Depends(require_token)])
+def queue_status() -> dict[str, Any]:
+    """Summarize durable queue state without exposing payloads or lease tokens."""
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(
+                "SELECT state, COUNT(*) FROM novacomp_task_queue GROUP BY state ORDER BY state"
+            )
+            rows = cur.fetchall()
+    return {"states": {row[0]: row[1] for row in rows}, "automatic_execution": False}
+
+
 @app.get("/api/capabilities")
 def capabilities() -> dict[str, Any]:
     return {
@@ -347,13 +501,14 @@ def capabilities() -> dict[str, Any]:
             "tool risk-policy primitives and checkpoint serialization library",
             "durable checkpoint save/load API (requires configured PostgreSQL)",
             "bounded evidence-based recursive improvement proposals with durable history",
+            "durable idempotent task queue with expiring leases and authenticated completion",
             "health diagnostics",
         ],
         "not_claimed": [
             "consciousness",
             "semantic embeddings (not yet connected)",
             "durable checkpoint persistence until DATABASE_URL is configured and tested",
-            "durable task queue (not yet connected)",
+            "durable queue is API-connected but requires a separate worker process for execution",
             "automatic tool execution or continuous background execution",
             "successful database connection until tested",
         ],
