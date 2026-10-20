@@ -15,6 +15,8 @@ import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from nova_core import TaskSpec, parallel_waves, stable_digest, validate_task_graph
+
 app = FastAPI(
     title="NovaComp Continuity Kernel",
     version="0.1.0",
@@ -35,6 +37,19 @@ CREATE INDEX IF NOT EXISTS novacomp_memory_created_at_idx
 CREATE INDEX IF NOT EXISTS novacomp_memory_category_idx
     ON novacomp_memory (category);
 """
+
+
+class TaskInput(BaseModel):
+    task_id: str = Field(min_length=1, max_length=100)
+    action: str = Field(min_length=1, max_length=100)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    depends_on: list[str] = Field(default_factory=list, max_length=100)
+    idempotency_key: str = Field(default="", max_length=200)
+
+
+class AgentPlanInput(BaseModel):
+    run_id: str = Field(min_length=1, max_length=120)
+    tasks: list[TaskInput] = Field(min_length=1, max_length=100)
 
 
 class MemoryWrite(BaseModel):
@@ -86,21 +101,57 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.post("/api/agent/plan", dependencies=[Depends(require_token)])
+def plan_agent_run(request: AgentPlanInput) -> dict[str, Any]:
+    """Validate a task DAG and return deterministic, dependency-safe parallel waves."""
+    tasks = [
+        TaskSpec(
+            task_id=task.task_id,
+            action=task.action,
+            payload=task.payload,
+            depends_on=tuple(task.depends_on),
+            idempotency_key=task.idempotency_key,
+        )
+        for task in request.tasks
+    ]
+    try:
+        graph = validate_task_graph(tasks)
+        waves = parallel_waves(tasks)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    canonical = [
+        {"task_id": t.task_id, "action": t.action, "payload": t.payload,
+         "depends_on": list(t.depends_on), "idempotency_key": t.idempotency_key}
+        for t in sorted(graph.values(), key=lambda item: item.task_id)
+    ]
+    return {
+        "run_id": request.run_id,
+        "validated": True,
+        "task_count": len(graph),
+        "parallel_waves": waves,
+        "graph_digest": stable_digest(canonical),
+        "execution_started": False,
+        "note": "Planning only: this endpoint does not execute tools or create a durable queue.",
+    }
+
+
 @app.get("/api/capabilities")
 def capabilities() -> dict[str, Any]:
     return {
         "architecture": "stateless-api + durable-postgres",
         "capabilities": [
             "authenticated memory writes",
-            "durable checkpoints",
-            "keyword and recency retrieval",
-            "tag/category filtering",
+            "keyword retrieval with category filtering",
+            "deterministic dependency-aware parallel task planning",
+            "tool risk-policy primitives and checkpoint serialization library",
             "health diagnostics",
         ],
         "not_claimed": [
             "continuous background execution",
             "consciousness",
             "semantic embeddings (not yet connected)",
+            "durable task queue/checkpoint storage (not yet connected)",
+            "automatic tool execution or continuous background execution",
             "successful database connection until tested",
         ],
     }
