@@ -469,7 +469,10 @@ def finish_task(request: QueueFinishInput) -> dict[str, Any]:
             cur.execute(
                 """
                 UPDATE novacomp_task_queue
-                SET state = %s,
+                SET state = CASE
+                        WHEN %s = 'failed' AND attempts < max_attempts THEN 'queued'
+                        ELSE %s
+                    END,
                     result = %s::jsonb,
                     last_error = NULLIF(%s, ''),
                     lease_token_hash = NULL,
@@ -479,7 +482,7 @@ def finish_task(request: QueueFinishInput) -> dict[str, Any]:
                   AND lease_token_hash = %s AND lease_until > NOW()
                 RETURNING task_id, state, attempts
                 """,
-                (request.outcome, json.dumps(request.result), request.error,
+                (request.outcome, request.outcome, json.dumps(request.result), request.error,
                  request.task_id, token_hash),
             )
             row = cur.fetchone()
