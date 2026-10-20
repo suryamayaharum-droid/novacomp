@@ -5,9 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "novacomp"
 version = "0.1.0"
-description = "A Python project"
+description = "NovaComp native agentic orchestration and continuity kernel"
 authors = [{name = "suryamayaharum-droid"}]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.104,<1",
+  "pydantic>=2.5,<3",
+  "psycopg[binary]>=3.2,<4",
+  "uvicorn[standard]>=0.24,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
 
 [tool.black]
 line-length = 88
