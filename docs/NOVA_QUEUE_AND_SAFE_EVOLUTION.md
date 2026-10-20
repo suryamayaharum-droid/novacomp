@@ -26,13 +26,25 @@ all attempts is marked failed instead of being retried forever.
 
 This queue is **durable coordination**, not a running autonomous worker. The API
 does not execute arbitrary Python, shell commands, deployments, external writes,
-or code edits. A separate worker process must be deployed and operated before
-queued tasks can be processed. That worker must independently validate each
+or code edits. A bounded worker entrypoint now exists at `nova_worker.py`; it must still be deployed and operated as a separate process before queued tasks can be processed. That worker must independently validate each
 payload, implement only the two allowlisted actions, record bounded results, and
 route ambiguous or external-impacting actions to human review.
 
 The evolution planner still generates evidence-based proposals with
 `execution_allowed = false`. Queueing a proposal does not approve or execute it.
+
+## Running the bounded worker
+
+Configure `NOVACOMP_API_URL` and `NOVACOMP_API_TOKEN` in the worker runtime only.
+Optional controls are `NOVACOMP_WORKER_MAX_TASKS` (default 10, max 1000),
+`NOVACOMP_WORKER_POLL_SECONDS` (default 2), and
+`NOVACOMP_WORKER_LEASE_SECONDS` (default 90). Install dependencies from
+`requirements.txt`, then run `python nova_worker.py`. Each process exits after
+a bounded number of queue polls; a supervisor may restart it on a schedule.
+Do not place the token in source control or logs.
+
+The worker only routes `propose_improvement` to the proposal API and
+`record_checkpoint` to the checkpoint API. It does not run arbitrary code.
 
 ## Next validation steps
 
