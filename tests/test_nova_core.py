@@ -2,7 +2,8 @@ import unittest
 
 from nova_core import (
     PolicyDenied, Risk, TaskSpec, TaskState, ToolPolicy, authorize_tool,
-    parallel_waves, transition, validate_task_graph,
+    checkpoint_to_dict, make_checkpoint, parallel_waves, transition,
+    validate_task_graph,
 )
 
 
@@ -37,6 +38,23 @@ class NovaCoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             transition(TaskState.QUEUED, TaskState.SUCCEEDED)
         self.assertEqual(transition(TaskState.QUEUED, TaskState.LEASED), TaskState.LEASED)
+
+
+    def test_checkpoint_is_json_ready_and_resumable(self):
+        tasks = [
+            TaskSpec("a", "inspect"),
+            TaskSpec("b", "report", depends_on=("a",)),
+        ]
+        checkpoint = make_checkpoint("run-1", tasks, ["a"], {"a": {"ok": True}})
+        payload = checkpoint_to_dict(checkpoint)
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["completed_task_ids"], ("a",))
+        self.assertEqual(payload["pending_task_ids"], ("b",))
+        self.assertEqual(len(payload["graph_digest"]), 64)
+
+    def test_checkpoint_rejects_unknown_completed_task(self):
+        with self.assertRaises(ValueError):
+            make_checkpoint("run-1", [TaskSpec("a", "inspect")], ["missing"])
 
 
 if __name__ == "__main__":
