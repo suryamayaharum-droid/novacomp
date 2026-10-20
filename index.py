@@ -393,6 +393,7 @@ def enqueue_task(request: QueueTaskInput) -> dict[str, Any]:
                  json.dumps(request.payload), request.idempotency_key, request.max_attempts),
             )
             row = cur.fetchone()
+            created_now = row is not None
             if row is None:
                 cur.execute(
                     """SELECT task_id, state, created_at FROM novacomp_task_queue
@@ -404,7 +405,7 @@ def enqueue_task(request: QueueTaskInput) -> dict[str, Any]:
                     raise HTTPException(status_code=503, detail="Could not confirm queued task.")
                 if row[0] != request.task_id:
                     raise HTTPException(status_code=409, detail="Idempotency key belongs to another task.")
-    return {"stored": True, "created_now": row[0] == request.task_id,
+    return {"stored": True, "created_now": created_now,
             "task_id": row[0], "state": row[1], "created_at": row[2].isoformat(),
             "execution_started": False}
 
@@ -417,6 +418,16 @@ def claim_task(lease_seconds: int = Query(default=90, ge=10, le=600)) -> dict[st
     with connect_db() as conn:
         with conn.cursor() as cur:
             cur.execute(SCHEMA_SQL)
+            cur.execute(
+                """
+                UPDATE novacomp_task_queue
+                SET state = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'queued' END,
+                    lease_token_hash = NULL, lease_until = NULL,
+                    last_error = COALESCE(last_error, 'Lease expired before completion.'),
+                    updated_at = NOW()
+                WHERE state = 'leased' AND lease_until <= NOW()
+                """
+            )
             cur.execute(
                 """
                 WITH candidate AS (
