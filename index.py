@@ -15,7 +15,10 @@ import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from nova_core import TaskSpec, parallel_waves, stable_digest, validate_task_graph
+from nova_core import (
+    TaskSpec, checkpoint_to_dict, make_checkpoint, parallel_waves,
+    stable_digest, validate_task_graph,
+)
 
 app = FastAPI(
     title="NovaComp Continuity Kernel",
@@ -36,6 +39,14 @@ CREATE INDEX IF NOT EXISTS novacomp_memory_created_at_idx
     ON novacomp_memory (created_at DESC);
 CREATE INDEX IF NOT EXISTS novacomp_memory_category_idx
     ON novacomp_memory (category);
+CREATE TABLE IF NOT EXISTS novacomp_checkpoints (
+    run_id TEXT PRIMARY KEY,
+    graph_digest TEXT NOT NULL,
+    checkpoint JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS novacomp_checkpoints_updated_at_idx
+    ON novacomp_checkpoints (updated_at DESC);
 """
 
 
@@ -57,6 +68,13 @@ class MemoryWrite(BaseModel):
     category: str = Field(default="general", min_length=1, max_length=80)
     tags: list[str] = Field(default_factory=list, max_length=30)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CheckpointInput(BaseModel):
+    run_id: str = Field(min_length=1, max_length=120)
+    tasks: list[TaskInput] = Field(min_length=1, max_length=100)
+    completed_task_ids: list[str] = Field(default_factory=list, max_length=100)
+    outputs: dict[str, Any] = Field(default_factory=dict)
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -132,6 +150,83 @@ def plan_agent_run(request: AgentPlanInput) -> dict[str, Any]:
         "graph_digest": stable_digest(canonical),
         "execution_started": False,
         "note": "Planning only: this endpoint does not execute tools or create a durable queue.",
+    }
+
+
+@app.post("/api/agent/checkpoint", dependencies=[Depends(require_token)])
+def save_agent_checkpoint(request: CheckpointInput) -> dict[str, Any]:
+    """Persist a versioned run checkpoint; refuse to overwrite a different task graph."""
+    tasks = [
+        TaskSpec(
+            task_id=task.task_id,
+            action=task.action,
+            payload=task.payload,
+            depends_on=tuple(task.depends_on),
+            idempotency_key=task.idempotency_key,
+        )
+        for task in request.tasks
+    ]
+    try:
+        checkpoint = make_checkpoint(
+            request.run_id, tasks, request.completed_task_ids, request.outputs
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    payload = checkpoint_to_dict(checkpoint)
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(
+                """
+                INSERT INTO novacomp_checkpoints (run_id, graph_digest, checkpoint)
+                VALUES (%s, %s, %s::jsonb)
+                ON CONFLICT (run_id) DO UPDATE
+                SET checkpoint = EXCLUDED.checkpoint,
+                    updated_at = NOW()
+                WHERE novacomp_checkpoints.graph_digest = EXCLUDED.graph_digest
+                RETURNING run_id, graph_digest, updated_at
+                """,
+                (request.run_id, checkpoint.graph_digest, json.dumps(payload)),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This run_id already belongs to a different task graph.",
+                )
+    return {
+        "stored": True,
+        "run_id": row[0],
+        "graph_digest": row[1],
+        "checkpoint": payload,
+        "updated_at": row[2].isoformat(),
+    }
+
+
+@app.get("/api/agent/checkpoint/{run_id}", dependencies=[Depends(require_token)])
+def load_agent_checkpoint(run_id: str) -> dict[str, Any]:
+    """Load the last durable checkpoint for a run so an executor can resume it."""
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(
+                """
+                SELECT checkpoint, graph_digest, updated_at
+                FROM novacomp_checkpoints
+                WHERE run_id = %s
+                """,
+                (run_id,),
+            )
+            row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Checkpoint not found.")
+    return {
+        "found": True,
+        "run_id": run_id,
+        "checkpoint": row[0],
+        "graph_digest": row[1],
+        "updated_at": row[2].isoformat(),
     }
 
 
