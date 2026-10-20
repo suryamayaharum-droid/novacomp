@@ -138,7 +138,7 @@ def plan_agent_run(request: AgentPlanInput) -> dict[str, Any]:
 @app.get("/api/capabilities")
 def capabilities() -> dict[str, Any]:
     return {
-        "architecture": "stateless-api + durable-postgres",
+        "architecture": "stateless API + optional PostgreSQL persistence",
         "capabilities": [
             "authenticated memory writes",
             "keyword retrieval with category filtering",
@@ -147,7 +147,6 @@ def capabilities() -> dict[str, Any]:
             "health diagnostics",
         ],
         "not_claimed": [
-            "continuous background execution",
             "consciousness",
             "semantic embeddings (not yet connected)",
             "durable task queue/checkpoint storage (not yet connected)",
