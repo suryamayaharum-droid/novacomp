@@ -19,6 +19,7 @@ from nova_core import (
     TaskSpec, checkpoint_to_dict, make_checkpoint, parallel_waves,
     stable_digest, validate_task_graph,
 )
+from nova_evolution import Metric, Observation, propose_next_iteration, proposal_to_dict
 
 app = FastAPI(
     title="NovaComp Continuity Kernel",
@@ -47,6 +48,15 @@ CREATE TABLE IF NOT EXISTS novacomp_checkpoints (
 );
 CREATE INDEX IF NOT EXISTS novacomp_checkpoints_updated_at_idx
     ON novacomp_checkpoints (updated_at DESC);
+CREATE TABLE IF NOT EXISTS novacomp_evolution_proposals (
+    proposal_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    iteration INTEGER NOT NULL CHECK (iteration > 0),
+    proposal JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS novacomp_evolution_proposals_run_idx
+    ON novacomp_evolution_proposals (run_id, iteration DESC);
 """
 
 
@@ -75,6 +85,22 @@ class CheckpointInput(BaseModel):
     tasks: list[TaskInput] = Field(min_length=1, max_length=100)
     completed_task_ids: list[str] = Field(default_factory=list, max_length=100)
     outputs: dict[str, Any] = Field(default_factory=dict)
+
+
+class MetricInput(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    value: float
+    target: float
+    direction: str = "higher"
+
+
+class EvolutionInput(BaseModel):
+    run_id: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=2000)
+    metrics: list[MetricInput] = Field(default_factory=list, max_length=50)
+    known_failures: list[str] = Field(default_factory=list, max_length=30)
+    iteration: int = Field(default=1, ge=1, le=5)
+    max_iterations: int = Field(default=5, ge=1, le=5)
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -230,6 +256,86 @@ def load_agent_checkpoint(run_id: str) -> dict[str, Any]:
     }
 
 
+@app.post("/api/agent/evolve/propose", dependencies=[Depends(require_token)])
+def propose_evolution(request: EvolutionInput) -> dict[str, Any]:
+    """Create and persist one bounded improvement proposal from observed evidence."""
+    observation = Observation(
+        run_id=request.run_id,
+        summary=request.summary,
+        metrics=tuple(
+            Metric(name=m.name, value=m.value, target=m.target, direction=m.direction)
+            for m in request.metrics
+        ),
+        known_failures=tuple(request.known_failures),
+    )
+    try:
+        proposal = propose_next_iteration(
+            observation,
+            iteration=request.iteration,
+            max_iterations=request.max_iterations,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    payload = proposal_to_dict(proposal)
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(
+                """
+                INSERT INTO novacomp_evolution_proposals
+                    (proposal_id, run_id, iteration, proposal)
+                VALUES (%s, %s, %s, %s::jsonb)
+                ON CONFLICT (proposal_id) DO NOTHING
+                RETURNING proposal_id
+                """,
+                (proposal.proposal_id, request.run_id, request.iteration, json.dumps(payload)),
+            )
+            stored = cur.fetchone() is not None
+            if not stored:
+                cur.execute(
+                    "SELECT proposal FROM novacomp_evolution_proposals WHERE proposal_id = %s",
+                    (proposal.proposal_id,),
+                )
+                existing = cur.fetchone()
+                if existing is None:
+                    raise HTTPException(status_code=503, detail="Could not confirm stored proposal.")
+                payload = existing[0]
+    return {
+        "stored": True,
+        "created_now": stored,
+        "proposal": payload,
+        "execution_started": False,
+        "note": "Proposal only; no source code is modified and no tools are executed.",
+    }
+
+
+@app.get("/api/agent/evolve/proposals/{run_id}", dependencies=[Depends(require_token)])
+def list_evolution_proposals(run_id: str, limit: int = Query(default=10, ge=1, le=50)) -> dict[str, Any]:
+    """Return recent improvement proposals for one run, newest iteration first."""
+    with connect_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
+            cur.execute(
+                """
+                SELECT proposal_id, iteration, proposal, created_at
+                FROM novacomp_evolution_proposals
+                WHERE run_id = %s
+                ORDER BY iteration DESC, created_at DESC
+                LIMIT %s
+                """,
+                (run_id, limit),
+            )
+            rows = cur.fetchall()
+    return {
+        "run_id": run_id,
+        "count": len(rows),
+        "proposals": [
+            {"proposal_id": row[0], "iteration": row[1], "proposal": row[2], "created_at": row[3].isoformat()}
+            for row in rows
+        ],
+    }
+
+
 @app.get("/api/capabilities")
 def capabilities() -> dict[str, Any]:
     return {
@@ -240,6 +346,7 @@ def capabilities() -> dict[str, Any]:
             "deterministic dependency-aware parallel task planning",
             "tool risk-policy primitives and checkpoint serialization library",
             "durable checkpoint save/load API (requires configured PostgreSQL)",
+            "bounded evidence-based recursive improvement proposals with durable history",
             "health diagnostics",
         ],
         "not_claimed": [
