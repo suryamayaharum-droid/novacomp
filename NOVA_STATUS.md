@@ -52,3 +52,16 @@ Construir a base persistente da agente Nova: continuidade de tarefas, checkpoint
 2. Adicionar `DATABASE_URL` e gerar `NOVACOMP_API_TOKEN` em Vercel → Settings → Environment Variables → Production.
 3. Fazer novo deploy para aplicar as variáveis e executar `scripts/smoke_test.py` em ambiente que tenha acesso ao endpoint.
 4. Hospedar `nova_worker.py` em um serviço de worker contínuo/cron supervisionado e validar o ciclo de fila com uma tarefa de teste inofensiva.
+
+## Engenharia e implantação — 2026-10-25 (continuação)
+- Atualizado `nova_worker.py`: modo contínuo supervisionado por `--continuous`, encerramento por SIGTERM/SIGINT, lotes limitados, espera entre lotes e backoff de erros.
+- Erros do worker agora são reduzidos a categorias/códigos HTTP sem registrar corpos de resposta, URLs com query string ou mensagens arbitrárias do provedor.
+- Declarado `httpx` em `pyproject.toml`, dependência usada pelo worker.
+- Adicionado `Dockerfile.worker` para um host de container/worker supervisionado.
+- Adicionados testes para redaction de erros em `tests/test_nova_worker.py`.
+- Reescrito README para descrever apenas capacidades implementadas e limitações reais; a documentação anterior fazia alegações de TurboQuant, WebSocket e autonomia não comprovadas pela API atual.
+- Adicionados `docs/PRODUCTION_RUNBOOK.md` e `docs/CODEX_REVIEW_PROMPT.md`.
+- A compilação Vercel do commit `f693588f6e337543f825c8c50ae168f887627b2d` terminou em `READY`.
+- Não consegui executar a suíte de testes no ambiente conectado; a compilação da Vercel não executa esses testes automaticamente. O teste HTTP de produção permanece bloqueado por acesso/proteção da Vercel.
+- Não foi possível invocar um runtime Codex diretamente nesta sessão; o prompt de revisão foi preparado para execução no Codex conectado ao repositório.
+- Banco dedicado de produção, variáveis Production e hospedagem efetiva do worker continuam pendentes. Nenhuma credencial foi inventada e nenhum banco compartilhado foi reutilizado.
