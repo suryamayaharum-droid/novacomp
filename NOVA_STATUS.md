@@ -35,3 +35,20 @@ Construir a base persistente da agente Nova: continuidade de tarefas, checkpoint
 - Nenhum segredo deve ser commitado no GitHub ou impresso em logs.
 - Sem GitHub Actions; a implantação pode ser feita pelo vínculo Git da Vercel.
 - Não habilitar loops infinitos nem execução arbitrária.
+
+## Atualização operacional — 2026-10-25
+- Implantação de produção confirmada como `READY`: commit `731db450ede8012df290894cf939aa36b6ee1d53` (inclui verificação real de conectividade PostgreSQL no health e smoke test somente leitura).
+- O build da Vercel concluiu em aproximadamente 6 segundos; estado final consultado: `READY`.
+- Novo endpoint `/api/health` agora distingue `database_configured` de `database_reachable` e nunca retorna DSN nem detalhes internos do provedor.
+- Criado `scripts/smoke_test.py`, que verifica apenas `/`, `/api/health` e `/openapi.json`; não grava memória nem reivindica tarefas.
+- Limitação de validação: a leitura HTTP pública foi bloqueada pela proteção SSO da Vercel; por isso, o smoke test ainda não foi executado contra o endpoint implantado.
+- Bloqueio de produção: `DATABASE_URL` e `NOVACOMP_API_TOKEN` existem apenas em Preview; não há variáveis Production visíveis.
+- Tentativa de criar um projeto Neon dedicado foi recusada pela política da organização gerenciada pela Vercel. Não foi usado o banco compartilhado de Arte Harum/Chat para a NovaComp, evitando mistura de dados.
+- Worker externo continua sem serviço contínuo. Ollama/modelo local não está instalado nesta infraestrutura serverless.
+- Nenhum segredo foi exibido ou gravado no repositório; nenhuma ação de fila foi executada em produção.
+
+## Próximo passo obrigatório para conclusão real
+1. Criar/autorizar um banco PostgreSQL dedicado à NovaComp em um projeto Neon separado, ou fornecer um endpoint de banco de produção já aprovado.
+2. Adicionar `DATABASE_URL` e gerar `NOVACOMP_API_TOKEN` em Vercel → Settings → Environment Variables → Production.
+3. Fazer novo deploy para aplicar as variáveis e executar `scripts/smoke_test.py` em ambiente que tenha acesso ao endpoint.
+4. Hospedar `nova_worker.py` em um serviço de worker contínuo/cron supervisionado e validar o ciclo de fila com uma tarefa de teste inofensiva.
