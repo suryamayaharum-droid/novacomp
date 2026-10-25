@@ -174,11 +174,24 @@ def root() -> dict[str, str]:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    """Report API liveness separately from database configuration and reachability."""
+    database_configured = bool(os.getenv("DATABASE_URL"))
+    database_reachable = False
+    if database_configured:
+        try:
+            with psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=3) as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    database_reachable = cur.fetchone() == (1,)
+        except Exception:
+            # Health output must never disclose DSNs or provider internals.
+            database_reachable = False
     return {
         "status": "ok",
         "service": "novacomp-continuity-kernel",
         "version": app.version,
-        "database_configured": bool(os.getenv("DATABASE_URL")),
+        "database_configured": database_configured,
+        "database_reachable": database_reachable,
         "memory_auth_configured": bool(os.getenv("NOVACOMP_API_TOKEN")),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
