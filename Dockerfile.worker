@@ -1,0 +1,11 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY nova_core.py nova_evolution.py nova_worker.py ./
+RUN pip install --no-cache-dir .
+
+CMD ["python", "nova_worker.py", "--continuous"]
