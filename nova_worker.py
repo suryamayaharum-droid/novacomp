@@ -1,11 +1,14 @@
-"""Bounded external worker for NovaComp's durable queue.
+"""Bounded NovaComp queue worker.
 
-Run as a separately supervised process. It only dispatches the two API-backed,
-allowlisted actions; it does not execute shell commands or edit source code.
+Run one batch with `python nova_worker.py`, or use `--continuous` under a
+supervisor/container host. Only the two API-backed allowlisted actions run;
+no shell execution or source-code mutation is supported.
 """
 from __future__ import annotations
 
+import argparse
 import os
+import signal
 import time
 from typing import Any
 
@@ -16,7 +19,10 @@ API_TOKEN = os.getenv("NOVACOMP_API_TOKEN", "")
 MAX_TASKS = int(os.getenv("NOVACOMP_WORKER_MAX_TASKS", "10"))
 POLL_SECONDS = float(os.getenv("NOVACOMP_WORKER_POLL_SECONDS", "2"))
 LEASE_SECONDS = int(os.getenv("NOVACOMP_WORKER_LEASE_SECONDS", "90"))
+IDLE_SLEEP_SECONDS = float(os.getenv("NOVACOMP_WORKER_IDLE_SLEEP_SECONDS", "5"))
+ERROR_BACKOFF_SECONDS = float(os.getenv("NOVACOMP_WORKER_ERROR_BACKOFF_SECONDS", "10"))
 ALLOWED_ACTIONS = {"propose_improvement", "record_checkpoint"}
+_STOP = False
 
 
 def _headers() -> dict[str, str]:
@@ -58,8 +64,21 @@ def process_task(client: httpx.Client, task: dict[str, Any]) -> dict[str, Any]:
     return {"action": task["action"], "response": response.json()}
 
 
+def _safe_error(exc: Exception) -> str:
+    """Persist a bounded error category without response bodies, URLs or secrets."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTPStatusError: upstream returned HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.TimeoutException):
+        return "TimeoutException: upstream request timed out"
+    if isinstance(exc, httpx.RequestError):
+        return f"RequestError: {type(exc).__name__}"
+    if isinstance(exc, ValueError):
+        return f"ValidationError: {str(exc)[:300]}"
+    return f"WorkerError: {type(exc).__name__}"
+
+
 def run_worker(*, max_tasks: int = MAX_TASKS, poll_seconds: float = POLL_SECONDS) -> dict[str, int]:
-    """Process at most max_tasks queue items, then exit; suitable for a supervisor."""
+    """Process at most max_tasks queue items, then exit; suitable for one-shot jobs."""
     if max_tasks < 1 or max_tasks > 1000:
         raise ValueError("max_tasks must be between 1 and 1000.")
     if poll_seconds < 0 or poll_seconds > 60:
@@ -95,8 +114,10 @@ def run_worker(*, max_tasks: int = MAX_TASKS, poll_seconds: float = POLL_SECONDS
                 finish["result"] = process_task(client, task)
             except Exception as exc:
                 finish["outcome"] = "failed"
-                finish["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
-            finish_response = client.post("/api/queue/finish", json=finish, headers=headers)
+                finish["error"] = _safe_error(exc)
+            finish_response = client.post(
+                "/api/queue/finish", json=finish, headers=headers
+            )
             finish_response.raise_for_status()
             if finish["outcome"] == "succeeded":
                 stats["succeeded"] += 1
@@ -105,6 +126,42 @@ def run_worker(*, max_tasks: int = MAX_TASKS, poll_seconds: float = POLL_SECONDS
     return stats
 
 
+def run_continuously() -> None:
+    """Run bounded batches until the host sends SIGTERM/SIGINT."""
+    global _STOP
+    if IDLE_SLEEP_SECONDS < 1 or IDLE_SLEEP_SECONDS > 300:
+        raise ValueError("NOVACOMP_WORKER_IDLE_SLEEP_SECONDS must be between 1 and 300.")
+    if ERROR_BACKOFF_SECONDS < 1 or ERROR_BACKOFF_SECONDS > 300:
+        raise ValueError("NOVACOMP_WORKER_ERROR_BACKOFF_SECONDS must be between 1 and 300.")
+    _headers()  # Fail before entering the loop if credentials/config are absent.
+    while not _STOP:
+        try:
+            stats = run_worker(max_tasks=MAX_TASKS, poll_seconds=POLL_SECONDS)
+            if stats["claimed"] == 0 and not _STOP:
+                time.sleep(IDLE_SLEEP_SECONDS)
+        except Exception as exc:
+            # Avoid logging exception messages that may contain URLs or response data.
+            print(f"NovaComp worker batch failed: {_safe_error(exc)}", flush=True)
+            if not _STOP:
+                time.sleep(ERROR_BACKOFF_SECONDS)
+
+
+def _request_stop(_signum: int, _frame: Any) -> None:
+    global _STOP
+    _STOP = True
+
+
 if __name__ == "__main__":
-    result = run_worker()
-    print("NovaComp worker finished:", result)
+    parser = argparse.ArgumentParser(description="NovaComp allowlisted queue worker")
+    parser.add_argument(
+        "--continuous",
+        action="store_true",
+        help="run bounded batches until SIGTERM/SIGINT (requires a supervisor)",
+    )
+    args = parser.parse_args()
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+    if args.continuous:
+        run_continuously()
+    else:
+        print("NovaComp worker finished:", run_worker())
